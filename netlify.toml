@@ -1,0 +1,8 @@
+[build]
+  # Папка, где лежат функции для развертывания
+  functions = "netlify/functions"
+
+[functions]
+  # Указываем, что нужно использовать Node.js 18 (или выше) для функций
+  node_bundler = "esbuild"
+  included_files = ["!node_modules/node-fetch/**"] # Исключаем node-fetch, т.к. он встроен

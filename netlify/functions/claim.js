@@ -1,7 +1,6 @@
 // netlify/functions/claim.js
 
 exports.handler = async (event, context) => {
-    // Разрешаем CORS (если будут запросы из браузера)
     const headers = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
@@ -23,20 +22,17 @@ exports.handler = async (event, context) => {
         let isAppRequest = false;
         let type = 'testnet';
 
-        // Проверяем, кто делает запрос: мобильное приложение или обычный юзер (CLI)
         if (authHeader && authHeader === `Bearer ${process.env.MOBILE_APP_AUTH_TOKEN}`) {
             isAppRequest = true;
-            type = 'gas_only'; // Мобильному приложению даем только газ для регистрации
+            type = 'gas_only';
         }
 
-        // Если это обычный юзер из CLI, применяем Rate Limiting по IP (1 раз в 24 часа)
+        const userIP = event.headers['x-forwarded-for'] || event.headers['client-ip'] || 'unknown';
+        const redisKey = `faucet:${userIP}`;
+
+        // ПРОВЕРКА REDIS (До отправки на VPS)
         if (!isAppRequest) {
-            const userIP = event.headers['x-forwarded-for'] || event.headers['client-ip'] || 'unknown';
-            
-            // Запрос в Redis
-            const redisKey = `faucet:${userIP}`;
             const redisUrl = `${process.env.UPSTASH_REDIS_REST_URL}/get/${redisKey}`;
-            
             const redisCheck = await fetch(redisUrl, {
                 headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` }
             });
@@ -45,17 +41,12 @@ exports.handler = async (event, context) => {
             if (redisData.result !== null) {
                 return { 
                     statusCode: 429, headers, 
-                    body: JSON.stringify({ error: "Rate limit exceeded. You can claim once per 24 hours." }) 
+                    body: JSON.stringify({ error: "Rate limit exceeded. You can claim once per 10 minutes." }) 
                 };
             }
-
-            // Блокируем этот IP на 86400 секунд (24 часа)
-            await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/set/${redisKey}/true/EX/86400`, {
-                headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` }
-            });
         }
 
-        // Пересылаем команду на ваш защищенный VPS сервер
+        // ОТПРАВКА НА VPS
         const vpsResponse = await fetch(process.env.VPS_FAUCET_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -69,6 +60,7 @@ exports.handler = async (event, context) => {
 
         const vpsData = await vpsResponse.json();
 
+        // ЕСЛИ VPS ВЫДАЛ ОШИБКУ — ВОЗВРАЩАЕМ ЕЁ (без блокировки в Redis)
         if (!vpsResponse.ok) {
             return { 
                 statusCode: 500, headers, 
@@ -76,10 +68,15 @@ exports.handler = async (event, context) => {
             };
         }
 
-        // Возвращаем успешный ответ в кошелек или мобильное приложение
+        // ЕСЛИ ТРАНЗАКЦИЯ УСПЕШНА — БЛОКИРУЕМ В REDIS НА 600 СЕКУНД (10 МИНУТ)
+        if (!isAppRequest) {
+            await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/set/${redisKey}/true/EX/600`, {
+                headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` }
+            });
+        }
+
         return {
-            statusCode: 200,
-            headers,
+            statusCode: 200, headers,
             body: JSON.stringify({
                 status: "Success",
                 message: isAppRequest ? "Gas provisioned for app." : "Funds sent!",

@@ -1,6 +1,6 @@
 [build]
   # Папка, где лежат функции для развертывания
-  functions = "netlify/functions"
+  functions = ".netlify/functions"
 
 [functions]
   # Указываем, что нужно использовать Node.js 18 (или выше) для функций
